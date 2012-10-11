@@ -60,7 +60,7 @@ int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, m
 void decrypt(char*, char*, char*);
 
 //sets global_mod to mod
-mpz_t globalmodulus; mpz_init(globalmodulus);
+
 void extractmodulus(char*);
 
 void build_decoding_table();
