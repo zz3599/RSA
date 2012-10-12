@@ -4,7 +4,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
-
+#include <assert.h>
 #define MAXPRIMESIZE 512 //random primes of size 512 bits, mod size of 1024 bits
 #define MODSIZE (MAXPRIMESIZE*2)
 #define E 65537 // public exponent
@@ -105,97 +105,20 @@ void genrsa(){
 }
 
 void encrypt(char* keyfile, char* inputfile, char* output){
-  FILE* key; FILE* input;
-  int i;
-  if( (key = fopen(keyfile, "r")) == NULL || (input = fopen(inputfile, "r")) == NULL){
-    printf("Invalid file names\n");
+  //public exponent is known
+  mpz_t mod; mpz_init(mod);
+  //extract modulus from the keyfile
+  int gotmod = extractmodulus(keyfile, mod);
+  if(gotmod == -1){
+    printf("Failed in getting mod\n");
     return;
   }
-  if (decoding_table == NULL) build_decoding_table();
-  char* line = NULL; ssize_t read = -1; size_t len = 0;    
-  unsigned char* decoded;
-  int found = 0, mpz_index = 0; 
-  unsigned char _mpzimportbuffer[128];
-  for(i = 0; (read = getline(&line, &len, key)) != -1; i++){
-    if(i == 0 || line[0] == '-') continue;
-    printf("%s (%d)-> ", line, read);
-    int decode_sz = read / 4 * 3;
-    decoded = (unsigned char*) malloc(decode_sz);
-    base64_decode(line, decoded, read-1);
-    
-    int j; 
-    char decodehex[2*decode_sz + 1];
-    char* decodehex_index = decodehex;
-    char temp[3];
-
-    for(j = 0; j < decode_sz; j++){
-      // printf("%.2x",  decoded[j]);
-      sprintf(temp, "%.2x", decoded[j]);
-      decodehex[2*j] = temp[0]; 
-      decodehex[2*j + 1] = temp[1];
-    }
-    decodehex[2*decode_sz] = '\0';
-    printf("%s\n\n", decodehex);
-    
-    if(!found){
-      char* _modheader = strstr(decodehex, "028181");
-      if(_modheader){
-        _modheader += 8; //skip next 4 bytes, including the zero byte
-        found = 1;
-        printf("\nFound 028181 -> %c%c%c\n\n", *(_modheader),  *(_modheader+1),  *(_modheader+2));
-        while(*_modheader != '\0'){
-          unsigned char c1 = (unsigned char)*_modheader;
-          _modheader++;
-          unsigned char c2 = (unsigned char)*_modheader;
-          _modheader++;
-          _mpzimportbuffer[mpz_index++] = fromhex(c1, c2);
-
-        }
-      }
-    } else {//already found, start filling
-      char* _endheader = strstr(decodehex, "0203010001");
-      if(_endheader){
-        while(decodehex_index != _endheader){
-          unsigned char c1 = (unsigned char)*decodehex_index;
-          decodehex_index++;
-          unsigned char c2 = (unsigned char)*decodehex_index;
-          decodehex_index++;
-          _mpzimportbuffer[mpz_index++] = fromhex(c1, c2);
-        }        
-      } else { 
-        while(*decodehex_index != '\0'){
-          unsigned char c1 = (unsigned char)*decodehex_index;
-          decodehex_index++;
-          unsigned char c2 = (unsigned char)*decodehex_index;
-          decodehex_index++;
-          _mpzimportbuffer[mpz_index++] = fromhex(c1, c2);
-        }
-      }
-    }
-  }
-    
-  printf("Buffer:\n");
-  for(i = 0; i < 128; i++)
-    printf("%d ", _mpzimportbuffer[i]);
-  mpz_t mod; mpz_init(mod); 
-  mpz_import(mod, 128, 1, 1, 0, 0, _mpzimportbuffer);
-  gmp_printf("\nMod is: %Zd\n\n", mod);
-  fclose(key);
-  //public exponent is known
+  gmp_printf("Mod is %Zd\n", mod);
   mpz_t e, d; mpz_init(e); mpz_init(d);
   mpz_set_ui(e, E);
-  /*mpz_t p1, q1, theta;
-  mpz_init(p1); mpz_init(q1); mpz_init(theta); 
-  mpz_sub_ui(p1, p, 1);
-  mpz_sub_ui(q1, q, 1);
-  //theta = (p-1)* (q-1)
-  mpz_mul(theta, p1, q1);
-  //calculate e, a prime in itself, coprimal with theta
-  mpz_set_ui(e, E);*/
-  //now get d s.t. e*d = 1 (mod theta)
-  //mpz_invert(d, e, theta);
   base64_cleanup();
   //get the file data
+  FILE* input = fopen(inputfile, "r");
   fseek(input, 0, SEEK_END);
   int input_sz = ftell(input);
   rewind(input);
@@ -210,18 +133,23 @@ int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, m
   if(message_sz > BLOCKSIZE-11){
     return -1;
   }
-  int i,j, n;
+  int i,j, n, random;
   unsigned char* cipher = (unsigned char*)malloc(BLOCKSIZE);
   cipher[0] = 0x00;
   cipher[1] = 0x02;
   n = BLOCKSIZE - 3 - message_sz;
 
   for(i = 2; i < n + 2; i++){
-    cipher[i] = rand() % 256 + 0;
+    random = rand() % 256; //it cannot be zero otherwise the message becomes ambiguous
+    while(random == 0) random = rand() % 256;
+    cipher[i] = random;
   }
   cipher[i++] = 0x00;
   for(j = i; i < BLOCKSIZE; i++){
     cipher[i] = message[i-j];
+  }
+  for(i = 0; i < BLOCKSIZE; i++){
+    printf("%.2x ", cipher[i]);
   }
   mpz_t m; mpz_init(m);
   mpz_import(m, BLOCKSIZE, 1, sizeof(char), 0, 0, cipher);
@@ -234,13 +162,63 @@ int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, m
   fprintf(file, "%s", ciphertext);
   for(i = 0; i < cipher_sz; i++){
     printf("%.2x ", ciphertext[i]); 
-  }
+  } 
+  printf("\ncipher sz: %d\n", (int)cipher_sz);
   fclose(file);
   return 0;
 }
 
 void decrypt(char* key, char* input, char* output){
+  FILE* inputfile = fopen(input, "r");
+  int i; 
+  if(inputfile == NULL){
+    printf("input file invalid\n");
+    return;
+  }
+  fseek(inputfile, 0, SEEK_END);
+  int input_sz = ftell(inputfile);
+  rewind(inputfile);
+  char* filecontents = (char*) malloc(input_sz);
+  fread(filecontents, 1, input_sz, inputfile);
+  mpz_t mod, exp; mpz_init(mod); mpz_init(exp);
+  int gotmod = extractmodulus(key, mod);
+  if(gotmod == -1){
+    printf("Key file does not have mod\n");
+    return;
+  }
+  int gotexponent = extractprivate(key, exp);
+  if(gotexponent == -1){
+    printf("Key file does not have a private exponent\n");
+    return;
+  }
+  mpz_t Y; mpz_init(Y);
+  
+  mpz_import(Y, input_sz, 1, sizeof(char), 0, 0, filecontents);//convert the file contents into a bignum representation
+  gmp_printf("Mod: %Zx\nExponent: %Zx\n\n\nSize: %d\n", mod, exp, input_sz); 
+  mpz_powm(Y, Y, exp, mod);//m^c mod n
+  size_t decoded_size;
+  unsigned char* decoded = (unsigned char*) mpz_export(NULL, &decoded_size, 1, sizeof(char), 0, 0, Y);//get back to a byte stream
+  
+  //verify the parameters
+  if(decoded[0] != 0x02){
+    printf("Improperly encoded file\n");
+    return;
+  }
+  unsigned char* originaltext = NULL;
+  for(i = 1; i < decoded_size; i++){
+    if(decoded[i] == 0x00){//we start parsing the data after this byte
+      int j = i + 1;
+      originaltext = (unsigned char*) malloc(decoded_size - j);
+      for(; j < decoded_size; j++){
+	originaltext[j- (i+1)] = decoded[j];	
+      }
+    }
+    //    printf("%.2x (%d) ", decoded[i], (int)decoded_size);
+  }
+  printf("\nOriginal text: %s\n", originaltext);
 }
+
+
 //write out the private key to a file
 void writePrivate(private_key* privatekey, char* filename){
   char* fname = "temp.txt";
@@ -267,26 +245,27 @@ void writePrivate(private_key* privatekey, char* filename){
   //total size
   totalsize =  3 + (mod_sz + 4) + (pub_sz + 2) + (priv_sz + 4) + (p_sz + 3) +  (q_sz + 3) + (exp1_sz + 3) + (exp2_sz + 2) + (coeff_sz + 3);
   //write
-  fprintf(file,  "3082%.4x02010002%.2x%.2x", totalsize, mod_sz+1, mod_sz+1);
-  writeString(file, mod, mod_sz, 1);
-  fprintf(file, "02%.2x", pub_sz);
-  writeString(file, pub, pub_sz, 0);
-  fprintf(file, "02%.2x%.2x", priv_sz+1, priv_sz+1);
-  writeString(file, priv, priv_sz, 1);
-  fprintf(file, "02%.2x", p_sz+1);
-  writeString(file, p, p_sz, 1);
-  fprintf(file, "02%.2x", q_sz+1);
-  writeString(file, q, q_sz, 1);
-  fprintf(file, "02%.2x", exp1_sz+1);
-  writeString(file, exp1, exp1_sz, 1);
-  fprintf(file, "02%.2x", exp2_sz);
-  writeString(file, exp2, exp2_sz, 0);
-  fprintf(file, "02%.2x", coeff_sz+1);
-  writeString(file, coeff, coeff_sz, 1);
+
+  fprintf(file,  "3082%.4x02010002%.2x%.2x",   (unsigned int)totalsize,   (unsigned int)mod_sz+1,  (unsigned int) mod_sz+1);
+  writeString(file, mod,   (unsigned int)mod_sz, 1);
+  fprintf(file, "02%.2x",   (unsigned int)pub_sz);
+  writeString(file, pub,   (unsigned int)pub_sz, 0);
+  fprintf(file, "02%.2x%.2x",  (unsigned int) priv_sz+1,   (unsigned int)priv_sz+1);
+  writeString(file, priv,   (unsigned int)priv_sz, 1);
+  fprintf(file, "02%.2x",   (unsigned int)p_sz+1);
+  writeString(file, p,   (unsigned int)p_sz, 1);
+  fprintf(file, "02%.2x",   (unsigned int)q_sz+1);
+  writeString(file, q,   (unsigned int)q_sz, 1);
+  fprintf(file, "02%.2x",   (unsigned int)exp1_sz+1);
+  writeString(file, exp1,   (unsigned int)exp1_sz, 1);
+  fprintf(file, "02%.2x",   (unsigned int)exp2_sz);
+  writeString(file, exp2,   (unsigned int)exp2_sz, 0);
+  fprintf(file, "02%.2x",   (unsigned int)coeff_sz+1);
+  writeString(file, coeff,   (unsigned int)coeff_sz, 1);
   fclose(file);
   //now convert the file to base64
   file = fopen(fname, "r");
-  FILE* keyfile = fopen(filename, "wb+");
+  FILE* keyfile = fopen(filename, "w+");
   char buffer[7],  encoded[5];  
   int toencode[3];
   int i;
@@ -337,7 +316,7 @@ void writePublic(public_key* publickey, char* filename){
   writeString(file, print, count, 1);  
   //public exponent
   print = (char*) mpz_export(NULL, &count, 1, sizeof(char), 1, 0, publickey->e); 
-  fprintf(file, "02%.2x", count);
+  fprintf(file, "02%.2x",   (unsigned int)count);
   writeString(file, print, count, 0);
   fclose(file);
   //base 64 conversion
@@ -440,7 +419,7 @@ void generateRSAkeys(public_key* publickey, private_key* privatekey){
     randomPrime(q, MAXPRIMESIZE, r_state);
     //n = p*q  
     mpz_mul(n, p, q);
-    printf("SIZE of n in bits: %d, p: %d, q: %d\n", mpz_sizeinbase(n, 2), mpz_sizeinbase(p, 2), mpz_sizeinbase(q, 2));
+    printf("SIZE of n in bits: %d, p: %d, q: %d\n", (int)mpz_sizeinbase(n, 2), (int)mpz_sizeinbase(p, 2), (int)mpz_sizeinbase(q, 2));
   } while(mpz_sizeinbase(n,2) != 1024);
   
   mpz_t p1, q1, theta;
@@ -501,7 +480,7 @@ int extractmodulus(char* keyfile, mpz_t mod){
   unsigned char _mpzimportbuffer[128];
   for(i = 0; (read = getline(&line, &len, key)) != -1; i++){
     if(i == 0 || line[0] == '-') continue;
-    printf("%s (%d)-> ", line, read);
+    printf("%s (%d)-> ", line, (int)read);
     int decode_sz = read / 4 * 3;
     decoded = (unsigned char*) malloc(decode_sz);
     base64_decode(line, decoded, read-1);
@@ -537,7 +516,7 @@ int extractmodulus(char* keyfile, mpz_t mod){
       }
     } else {//already found modulus header, start filling
       char* _endheader = strstr(decodehex, "0203010001");
-      if(_endheader){
+      if(_endheader){//we found the end, remember to break
         while(decodehex_index != _endheader){
           unsigned char c1 = (unsigned char)*decodehex_index;
           decodehex_index++;
@@ -545,6 +524,7 @@ int extractmodulus(char* keyfile, mpz_t mod){
           decodehex_index++;
           _mpzimportbuffer[mpz_index++] = fromhex(c1, c2);
         }        
+	break;//break out we've found our modulus
       } else { 
         while(*decodehex_index != '\0'){
           unsigned char c1 = (unsigned char)*decodehex_index;
@@ -556,14 +536,11 @@ int extractmodulus(char* keyfile, mpz_t mod){
       }
     }
   }
-    
-  printf("Buffer:\n");
-  for(i = 0; i < 128; i++)
-    printf("%d ", _mpzimportbuffer[i]);
+
   //now do conversion to bignum
   //  mpz_t mod; mpz_init(mod); 
   mpz_import(mod, 128, 1, 1, 0, 0, _mpzimportbuffer);
-  gmp_printf("\nMod is: %Zd\n\n", mod);
+  gmp_printf("\nMod is(hex): %Zx\n\n", mod);
   fclose(key);
 
 }
@@ -580,9 +557,10 @@ int extractprivate(char* keyname, mpz_t d){
   ssize_t read = -1; size_t len = 0;
   unsigned char* decoded; //the base64-decoded into integer byte buffer
   //this is to keep track in the reading buffer for the private exponent
-  int found = 0, mpz_index = 0; 
+  int found = 0, mpz_index = 0, header_count = 0; //only if header count is already 1 do we start parsing
   unsigned char _mpzimportbuffer[128]; //size of the private exponent is 128 bytes, 0-255 in value
-  for(i = 0; read = getline(&line, &len, keyfile) != -1; i++){
+  for(i = 0; (read = getline(&line, &len, keyfile)) != -1; i++){
+    if(i == 0 || line[0] == '-') continue;
     int decode_sz = read / 4 * 3;
     decoded = (unsigned char*)malloc(decode_sz); 
     base64_decode(line, decoded, read-1); //skip the new line char
@@ -600,28 +578,33 @@ int extractprivate(char* keyname, mpz_t d){
     char* decodehex_index = decodehex; //for easier looping
     //now that we have converted buffer, let's search for the patterns
     if(!found){
-      char* _expheader = strstr(decodehex, "0203010001028181");
+      char* _expheader = strstr(decodehex, "028181");
       if(_expheader){
-	_expheader += 18; //move up 9 bits to skip the header and the null byte
-	found = 1; 
-	while(_expheader != '\0'){
-	  unsigned char c1 = (unsigned char)*_expheader; 
-	  _expheader++;
-	  unsigned char c2 = (unsigned char)*_expheader; 
-	  _expheader++;
-	  _mpzimportbuffer[mpz_index++] = fromhex(c1, c2);
+	header_count++;
+	if(header_count == 2){
+	  _expheader += 8; //move up 4 bytes to skip the header and the null byte
+	  printf("Found the beginning of private: %c %c %c\n", *_expheader, *(_expheader+1), *(_expheader+2));
+	  found = 1; 
+	  while(*_expheader != '\0'){
+	    unsigned char c1 = (unsigned char)*_expheader; 
+	    _expheader++;
+	    unsigned char c2 = (unsigned char)*_expheader; 
+	    _expheader++;
+	    _mpzimportbuffer[mpz_index++] = fromhex(c1, c2);
+	  }
 	}
       }
     } else { //already found the header, so check to see if we need to stop eventually
       char* _endheader = strstr(decodehex, "024100");//024100 is the header for the end of the string 
       if(_endheader){
-	while(decodehex_index != _endheader){
+	while(decodehex_index != _endheader){//there is an end header, so...
 	  unsigned char c1 = (unsigned char) *decodehex_index;
 	  decodehex_index++;
 	  unsigned char c2 = (unsigned char) *decodehex_index;
 	  decodehex_index++;
 	  _mpzimportbuffer[mpz_index++] = fromhex(c1, c2);
 	}
+	break;//break out once we are done with the last one
       } else { //no end header found, so just go to the end of the line
 	while(*decodehex_index != '\0'){
 	  unsigned char c1 = (unsigned char) *decodehex_index;
@@ -633,9 +616,10 @@ int extractprivate(char* keyname, mpz_t d){
       }
     }
   }
+  assert(mpz_index == 128);
   //set d to the private exponent
   mpz_import(d, 128, 1, sizeof(char), 0, 0, _mpzimportbuffer);
-  gmp_printf("\n\nPrivate key parsed to be: %Zd\n\n", d);
+  gmp_printf("\n\nPrivate key parsed to be: %Zx\n\n", d);
   fclose(keyfile);
   return 0;
 }
