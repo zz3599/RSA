@@ -53,7 +53,7 @@ int fromhex(char p1, char p2){
   return c1*16 + c2;
 }
 void genrsa();
-void encrypt(char*, char*, char*);
+void encrypt(int, char**);
 //this will do the heavy duty encrypting for both public and private exponents, writing to the filename
 int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, mpz_t modulus);
 
@@ -68,8 +68,8 @@ void base64_cleanup();
 
 int main(int argc, char** argv){
   //genrsa - generates keys
-  //e - encrypt, with keyfile and inputfile , outputfile
-  //d - decrypt, with keyfile and inputfile , outputfile
+  //e - encrypt keyfile inputfile , outputfile -pub/private
+  //d - decrypt, keyfile inputfile , outputfile -pub/private
   //
   if(argc < 2) printf("usage: %s [option]\n", argv[0]);
   else {
@@ -78,7 +78,7 @@ int main(int argc, char** argv){
     } else if(strcmp(argv[1], "e") == 0){
       if(argc < 5) printf("encrypt usage: %s e [keyfile] [inputfile] [outputfile]\n", argv[0]);
       else 
-        encrypt(argv[2], argv[3], argv[4]);
+        encrypt(argc, argv);
     } else if(strcmp(argv[1], "d") == 0){
       if(argc < 5) printf("decrypt usage: %s d [keyfile] [inputfile] [outputfile]\n", argv[0]);
       else decrypt(argv[2], argv[3], argv[4]);
@@ -104,7 +104,22 @@ void genrsa(){
   free(publickey);
 }
 
-void encrypt(char* keyfile, char* inputfile, char* output){
+void encrypt(int argc, char** argv){
+  char* keyfile, *inputfile, *output, *option; 
+  int usePublicKey = 1;
+  argc-=2;
+  argv+=2;//skip the first 2 args
+  if((keyfile = *argv++) == NULL) return;
+  if((inputfile = *argv++) == NULL) return;
+  if((output = *argv++) == NULL) return;
+  if(argc == 4){
+    option = *argv;
+    if(strstr(option, "priv")){
+      usePublicKey = 0;
+    }
+  }
+  printf("options: %s %s %s (num: %d)\n", keyfile, inputfile, output, argc);
+
   //public exponent is known
   mpz_t mod; mpz_init(mod);
   //extract modulus from the keyfile
@@ -114,8 +129,14 @@ void encrypt(char* keyfile, char* inputfile, char* output){
     return;
   }
   gmp_printf("Mod is %Zd\n", mod);
-  mpz_t e, d; mpz_init(e); mpz_init(d);
+  mpz_t e; mpz_init(e);
   mpz_set_ui(e, E);
+  if(!usePublicKey) {
+    if(extractprivate(keyfile, e) == -1){
+      printf("Not a valid private key");
+      return;
+    } 
+  }
   base64_cleanup();
   //get the file data
   FILE* input = fopen(inputfile, "r");
@@ -212,10 +233,18 @@ void decrypt(char* key, char* input, char* output){
       for(; j < decoded_size; j++){
 	originaltext[j- (i+1)] = decoded[j];	
       }
+      break;
     }
     //    printf("%.2x (%d) ", decoded[i], (int)decoded_size);
   }
   printf("\nOriginal text: %s\n", originaltext);
+  FILE* outputfile = fopen(output, "w+");
+  if(outputfile == NULL){
+    printf("Failed to write to file\n");
+    return;
+  }
+  fprintf(outputfile, "%s", originaltext);
+  fclose(outputfile);
 }
 
 
@@ -368,10 +397,7 @@ void base64_decode(char *data, unsigned char* decoded_data, int inputlength){
     if (j < outputsize) decoded_data[j++] = (unsigned char)((triple >> 8) & 0x000000FF);
     if (j < outputsize) decoded_data[j++] = (unsigned char)((triple) & 0x000000FF);
     //     printf("%c%c%c%c -> %x -> %.2x %.2x %.2x\n", data[i-4], data[i-3], data[i-2], data[i-1], triple, decoded_data[j-3], decoded_data[j-2], decoded_data[j-1]);
-    
   }
-  //  decoded_data[j] = '\0';
-
 }
 //build decoding table
 void build_decoding_table() {
