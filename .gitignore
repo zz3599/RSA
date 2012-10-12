@@ -1,4 +1,7 @@
 *.ssl
 *.txt
+*.pem
 rsaengine.dSYM
-rsa
+rsaengine
+id_rsa
+id_rsa.pub
