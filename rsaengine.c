@@ -55,10 +55,10 @@ int fromhex(char p1, char p2){
 void genrsa();
 void encrypt(int, char**);
 //this will do the heavy duty encrypting for both public and private exponents, writing to the filename
-int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, mpz_t modulus);
+int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, mpz_t modulus, int isPublic);
 
 
-void decrypt(char*, char*, char*);
+void decrypt(int, char**);
 
 
 int extractmodulus(char*, mpz_t m);
@@ -76,12 +76,13 @@ int main(int argc, char** argv){
     if(strcmp(argv[1], "genrsa") == 0){
       genrsa();
     } else if(strcmp(argv[1], "e") == 0){
-      if(argc < 5) printf("encrypt usage: %s e [keyfile] [inputfile] [outputfile]\n", argv[0]);
+      if(argc < 5) printf("encrypt usage: %s e [keyfile] [inputfile] [outputfile] [optional -priv]\n", argv[0]);
       else 
         encrypt(argc, argv);
     } else if(strcmp(argv[1], "d") == 0){
-      if(argc < 5) printf("decrypt usage: %s d [keyfile] [inputfile] [outputfile]\n", argv[0]);
-      else decrypt(argv[2], argv[3], argv[4]);
+      if(argc < 5) printf("decrypt usage: %s d [keyfile] [inputfile] [outputfile] [optional -public]\n", argv[0]);
+      else 
+	decrypt(argc, argv);
     } 
     else {
       printf("Unrecognized command: %s\n", argv[1]);
@@ -146,24 +147,29 @@ void encrypt(int argc, char** argv){
   char* filecontents = (char*)malloc(input_sz);
   fread(filecontents, 1, input_sz, input);
   printf("\n\nFile contents: %s\nsize: %d\n", filecontents, input_sz);
-  pub_encrypt(filecontents, output, input_sz, e, mod);
+  pub_encrypt(filecontents, output, input_sz, e, mod, usePublicKey);
 }
 
 //should always be less than 117 bytes
-int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, mpz_t modulus){
+//Follows PKCS standards
+int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, mpz_t modulus,int isPublic){
   if(message_sz > BLOCKSIZE-11){
     return -1;
   }
+  if(!isPublic) printf("\n\nYou are using a private key for encryption\n\n");
   int i,j, n, random;
   unsigned char* cipher = (unsigned char*)malloc(BLOCKSIZE);
   cipher[0] = 0x00;
-  cipher[1] = 0x02;
+  cipher[1] = isPublic ? 0x02 : 0x00; //if public key, use BLock tpe 2, for private use block type 0
   n = BLOCKSIZE - 3 - message_sz;
-
+ 
   for(i = 2; i < n + 2; i++){
-    random = rand() % 256; //it cannot be zero otherwise the message becomes ambiguous
-    while(random == 0) random = rand() % 256;
-    cipher[i] = random;
+    if(isPublic){
+      random = rand() % 256; //it cannot be zero otherwise the message becomes ambiguous
+      while(random == 0) random = rand() % 256;
+      cipher[i] = random;
+    } else 
+      cipher[i] = 0x00;//for private key encryption use just zeros 
   }
   cipher[i++] = 0x00;
   for(j = i; i < BLOCKSIZE; i++){
@@ -189,7 +195,20 @@ int pub_encrypt(char* message, char* filename, int message_sz, mpz_t exponent, m
   return 0;
 }
 
-void decrypt(char* key, char* input, char* output){
+void decrypt(int argc, char** argv){
+  char* keyfile, *input, *output, *option;
+  int usePrivateKey = 1;
+  argc -= 2;
+  argv += 2;
+  if((keyfile = *argv++) == NULL) return;
+  if((input = *argv++) == NULL) return;
+  if((output = *argv++) == NULL) return;
+  if(argc == 4){
+    option = *argv;
+    if(strstr(option, "pub")){
+      usePrivateKey = 0;
+    }
+  }
   FILE* inputfile = fopen(input, "r");
   int i; 
   if(inputfile == NULL){
@@ -202,15 +221,19 @@ void decrypt(char* key, char* input, char* output){
   char* filecontents = (char*) malloc(input_sz);
   fread(filecontents, 1, input_sz, inputfile);
   mpz_t mod, exp; mpz_init(mod); mpz_init(exp);
-  int gotmod = extractmodulus(key, mod);
+  int gotmod = extractmodulus(keyfile, mod);
   if(gotmod == -1){
     printf("Key file does not have mod\n");
     return;
   }
-  int gotexponent = extractprivate(key, exp);
+  int gotexponent = extractprivate(keyfile, exp);
   if(gotexponent == -1){
     printf("Key file does not have a private exponent\n");
     return;
+  } 
+  if(!usePrivateKey){
+    printf("Using public key decryption\n");
+    mpz_set_ui(exp, E);
   }
   mpz_t Y; mpz_init(Y);
   
@@ -219,10 +242,16 @@ void decrypt(char* key, char* input, char* output){
   mpz_powm(Y, Y, exp, mod);//m^c mod n
   size_t decoded_size;
   unsigned char* decoded = (unsigned char*) mpz_export(NULL, &decoded_size, 1, sizeof(char), 0, 0, Y);//get back to a byte stream
-  
+  for(i = 0; i < decoded_size; i++){
+    printf("%.2x ", decoded[i]);
+  }
   //verify the parameters
-  if(decoded[0] != 0x02){
-    printf("Improperly encoded file\n");
+  if(usePrivateKey && decoded[0] != 0x02){
+    printf("Improperly encoded file (expected a public header in the ciphertext)\n");
+    return;
+  }
+  if(!usePrivateKey && (decoded[0] != 0x00 || decoded[0] != 0x01)){
+    printf("Improperly encoded file (expected a private header in the ciphertext)\n");
     return;
   }
   unsigned char* originaltext = NULL;
@@ -605,10 +634,14 @@ int extractprivate(char* keyname, mpz_t d){
     //now that we have converted buffer, let's search for the patterns
     if(!found){
       char* _expheader = strstr(decodehex, "028181");
+      if(!_expheader) _expheader = strstr(decodehex, "028180");
       if(_expheader){
 	header_count++;
 	if(header_count == 2){
-	  _expheader += 8; //move up 4 bytes to skip the header and the null byte
+	  _expheader += 6;
+	  //	  printf("Without checking: %d, %d\n", *_expheader, *(_expheader+1));
+	  if((int)*_expheader == 48 && (int)*(_expheader+1) == 48)
+	    _expheader+=2;
 	  printf("Found the beginning of private: %c %c %c\n", *_expheader, *(_expheader+1), *(_expheader+2));
 	  found = 1; 
 	  while(*_expheader != '\0'){
@@ -642,7 +675,8 @@ int extractprivate(char* keyname, mpz_t d){
       }
     }
   }
-  assert(mpz_index == 128);
+  if(mpz_index != 128) printf("\nMPZ_INDDEX: %d\n", mpz_index);
+  //assert(mpz_index == 128);
   //set d to the private exponent
   mpz_import(d, 128, 1, sizeof(char), 0, 0, _mpzimportbuffer);
   gmp_printf("\n\nPrivate key parsed to be: %Zx\n\n", d);
