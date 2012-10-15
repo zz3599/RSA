@@ -76,11 +76,11 @@ int main(int argc, char** argv){
     if(strcmp(argv[1], "genrsa") == 0){
       genrsa();
     } else if(strcmp(argv[1], "e") == 0){
-      if(argc < 5) printf("encrypt usage: %s e [keyfile] [inputfile] [outputfile] [optional -priv]\n", argv[0]);
+      if(argc < 5) printf("encrypt usage: %s e [keyfile] [inputfile] [outputfile] [optional -priv, default public key encryption]\n", argv[0]);
       else 
         encrypt(argc, argv);
     } else if(strcmp(argv[1], "d") == 0){
-      if(argc < 5) printf("decrypt usage: %s d [keyfile] [inputfile] [outputfile] [optional -public]\n", argv[0]);
+      if(argc < 5) printf("decrypt usage: %s d [keyfile] [inputfile] [outputfile] [optional -public, default private key decryption]\n", argv[0]);
       else 
 	decrypt(argc, argv);
     } 
@@ -134,7 +134,7 @@ void encrypt(int argc, char** argv){
   mpz_set_ui(e, E);
   if(!usePublicKey) {
     if(extractprivate(keyfile, e) == -1){
-      printf("Not a valid private key");
+      printf("Not a valid private key\n");
       return;
     } 
   }
@@ -227,7 +227,7 @@ void decrypt(int argc, char** argv){
     return;
   }
   int gotexponent = extractprivate(keyfile, exp);
-  if(gotexponent == -1){
+  if(gotexponent == -1 && usePrivateKey){
     printf("Key file does not have a private exponent\n");
     return;
   } 
@@ -243,7 +243,7 @@ void decrypt(int argc, char** argv){
   size_t decoded_size;
   unsigned char* decoded = (unsigned char*) mpz_export(NULL, &decoded_size, 1, sizeof(char), 0, 0, Y);//get back to a byte stream
   for(i = 0; i < decoded_size; i++){
-    printf("%.2x ", decoded[i]);
+    printf("%.2x ", decoded[i], (int)decoded_size);
   }
   //verify the parameters
   if(usePrivateKey && decoded[0] != 0x02){
@@ -591,12 +591,16 @@ int extractmodulus(char* keyfile, mpz_t mod){
       }
     }
   }
-
+  if(mpz_index != 128){
+    printf("MPZ_INDEX: %d\n", mpz_index);
+    return -1;
+  }
   //now do conversion to bignum
   //  mpz_t mod; mpz_init(mod); 
   mpz_import(mod, 128, 1, 1, 0, 0, _mpzimportbuffer);
   gmp_printf("\nMod is(hex): %Zx\n\n", mod);
   fclose(key);
+  return 0;
 
 }
 
@@ -675,7 +679,10 @@ int extractprivate(char* keyname, mpz_t d){
       }
     }
   }
-  if(mpz_index != 128) printf("\nMPZ_INDDEX: %d\n", mpz_index);
+  if(mpz_index != 128) {
+    printf("\nMPZ_INDDEX: %d\n", mpz_index);
+    return -1;
+  }
   //assert(mpz_index == 128);
   //set d to the private exponent
   mpz_import(d, 128, 1, sizeof(char), 0, 0, _mpzimportbuffer);
